@@ -75,7 +75,7 @@ function FinancialView({ periods }: { periods: FinancialPeriod[] }) {
       <table className="w-full text-sm">
         <thead>
           <tr className="bg-elevated/50 text-muted text-xs">
-            <th className="px-3py-2 text-left font-medium sticky left-0 bg-elevated/90">指标</th>
+            <th className="px-3 py-2 text-left font-medium sticky left-0 bg-elevated/90">指标</th>
             {periods.map((p) => (
               <th key={p.end_date} className="px-3 py-2 text-right font-medium whitespace-nowrap">
                 {periodLabel(p.end_date)}
@@ -368,6 +368,7 @@ function Empty() {
     </div>
   )
 }
+
 // ---------- Token 配置 ----------
 function TokenPanel({ onSaved }: { onSaved: () => void }) {
   const [token, setToken] = useState('')
