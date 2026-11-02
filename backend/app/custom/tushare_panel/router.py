@@ -261,6 +261,156 @@ async def financial(ts_code: str, limit: int = 8) -> dict:
     return {"ts_code": ts_code, "empty": not periods, "periods": periods}
 
 
+# ============ 三大报表（利润 / 资产负债 / 现金流量） ============
+
+_INCOME_FIELDS = [
+    "ann_date", "end_date", "report_type",
+    "total_revenue", "revenue", "oper_cost",
+    "sell_exp", "admin_exp", "fin_exp", "rd_exp",
+    "operate_profit", "total_profit", "income_tax",
+    "n_income", "n_income_attr_p", "minority_gain",
+]
+
+_BALANCE_FIELDS = [
+    "ann_date", "end_date", "report_type",
+    "money_cap", "accounts_receiv", "inventories",
+    "total_cur_assets", "total_nca", "total_assets",
+    "accounts_pay", "total_cur_liab", "total_liab",
+    "total_hldr_eqy_exc_min_int", "goodwill", "lt_borr",
+]
+
+_CASHFLOW_FIELDS = [
+    "ann_date", "end_date", "report_type",
+    "c_fr_sale_sg", "n_cashflow_act", "n_cashflow_inv_act",
+    "n_cash_flows_fnc_act", "net_profit",
+]
+
+
+def _dedup_report(rows: list[dict], limit: int) -> list[dict]:
+    """合并报表：同一报告期多条更新时保留 ann_date 最新一条，降序取 limit。"""
+    latest: dict[str, dict] = {}
+    for r in rows:
+        ed = r.get("end_date")
+        if not ed:
+            continue
+        prev = latest.get(ed)
+        if prev is None or (r.get("ann_date") or "") > (prev.get("ann_date") or ""):
+            latest[ed] = r
+    periods = sorted(latest.values(), key=lambda x: x["end_date"], reverse=True)[:limit]
+    for p in periods:
+        p.pop("ann_date", None)
+        p.pop("report_type", None)
+    return periods
+
+
+async def _statement(api_name: str, ts_code: str, fields: list[str], limit: int) -> list[dict]:
+    rows = await _client().call(
+        api_name,
+        {"ts_code": ts_code, "report_type": "1"},
+        ",".join(fields),
+    )
+    # 参数未被严格过滤时，本地再兜底只保留合并报表（report_type=1）
+    rows = [r for r in rows if str(r.get("report_type")) == "1"]
+    return _dedup_report(rows, limit)
+
+
+@router.get("/income")
+async def income(ts_code: str, limit: int = 8) -> dict:
+    """利润表（金额原始单位：元，前端转亿元展示）。"""
+    ts_code = normalize_ts_code(ts_code)
+    try:
+        periods = await _statement("income", ts_code, _INCOME_FIELDS, limit)
+    except TushareError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    return {"ts_code": ts_code, "unit": "元", "empty": not periods, "periods": periods}
+
+
+@router.get("/balancesheet")
+async def balancesheet(ts_code: str, limit: int = 8) -> dict:
+    """资产负债表（金额原始单位：元，前端转亿元展示）。"""
+    ts_code = normalize_ts_code(ts_code)
+    try:
+        periods = await _statement("balancesheet", ts_code, _BALANCE_FIELDS, limit)
+    except TushareError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    return {"ts_code": ts_code, "unit": "元", "empty": not periods, "periods": periods}
+
+
+@router.get("/cashflow")
+async def cashflow(ts_code: str, limit: int = 8) -> dict:
+    """现金流量表（金额原始单位：元，前端转亿元展示）。"""
+    ts_code = normalize_ts_code(ts_code)
+    try:
+        periods = await _statement("cashflow", ts_code, _CASHFLOW_FIELDS, limit)
+    except TushareError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    return {"ts_code": ts_code, "unit": "元", "empty": not periods, "periods": periods}
+
+
+# ============ 每日估值指标（daily_basic 最新一条） ============
+
+_BASIC_FIELDS = [
+    "trade_date", "close", "turnover_rate", "turnover_rate_f", "volume_ratio",
+    "pe", "pe_ttm", "pb", "ps", "ps_ttm", "dv_ratio", "dv_ttm",
+    "total_share", "float_share", "free_share", "total_mv", "circ_mv", "limit_status",
+]
+
+
+@router.get("/basic")
+async def daily_basic(ts_code: str) -> dict:
+    """最新交易日估值与市值指标；市值单位万元，前端转亿元。"""
+    ts_code = normalize_ts_code(ts_code)
+    try:
+        rows = await _client().call(
+            "daily_basic",
+            {"ts_code": ts_code},
+            ",".join(_BASIC_FIELDS),
+        )
+    except TushareError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    rows = sorted(rows, key=lambda x: x.get("trade_date") or "", reverse=True)
+    latest = rows[0] if rows else None
+    return {"ts_code": ts_code, "unit_mv": "万元", "empty": latest is None, "basic": latest}
+
+
+# ============ 日线行情（K 线，Tushare daily 自绘，不依赖主看板缓存） ============
+
+_DAILY_FIELDS = [
+    "trade_date", "open", "high", "low", "close",
+    "pre_close", "change", "pct_chg", "vol", "amount",
+]
+
+
+@router.get("/daily")
+async def daily(ts_code: str, limit: int = 120) -> dict:
+    """最近 limit 个交易日日线，按日期升序返回（旧 → 新）。vol 手，amount 千元。"""
+    ts_code = normalize_ts_code(ts_code)
+    try:
+        rows = await _client().call(
+            "daily",
+            {"ts_code": ts_code},
+            ",".join(_DAILY_FIELDS),
+        )
+    except TushareError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    rows = sorted(rows, key=lambda x: x.get("trade_date") or "")[-limit:]
+    daily_rows = [
+        {
+            "trade_date": r.get("trade_date"),
+            "open": r.get("open"),
+            "high": r.get("high"),
+            "low": r.get("low"),
+            "close": r.get("close"),
+            "pre_close": r.get("pre_close"),
+            "pct_chg": r.get("pct_chg"),
+            "vol": r.get("vol"),
+            "amount": r.get("amount"),
+        }
+        for r in rows
+    ]
+    return {"ts_code": ts_code, "empty": not daily_rows, "daily": daily_rows}
+
+
 # ============ 资金流 ============
 
 MONEYFLOW_FIELDS = [
