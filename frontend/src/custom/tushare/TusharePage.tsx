@@ -1,6 +1,14 @@
-import { useEffect, useState, useCallback, type ReactNode } from 'react'
+import { useEffect, useRef, useState, useCallback, type ReactNode } from 'react'
 import { BarChart3, KeyRound } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
+import { StockSearchInput } from './StockSearchInput'
+import {
+  FinancialProfitChart,
+  FinancialGrowthChart,
+  MoneyflowChart,
+  NorthChart,
+  HoldersChart,
+} from './charts'
 import {
   tushareApi,
   type TushareStatus,
@@ -53,7 +61,7 @@ function Table({ headers, children }: { headers: string[]; children: ReactNode }
   )
 }
 
-// ---------- 财务（行=指标，列=报告期） ----------
+// ---------- 财务（图表在上，明细表格在下） ----------
 function FinancialView({ periods }: { periods: FinancialPeriod[] }) {
   const rows: [string, (p: FinancialPeriod) => string, (p: FinancialPeriod) => string][] = [
     ['每股收益(元)', (p) => fmt(p.eps), () => ''],
@@ -71,31 +79,41 @@ function FinancialView({ periods }: { periods: FinancialPeriod[] }) {
     ['净利润同比', (p) => fmtPct(p.netprofit_yoy), (p) => signClass(p.netprofit_yoy)],
   ]
   return (
-    <div className="rounded-card border border-border bg-surface overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="bg-elevated/50 text-muted text-xs">
-            <th className="px-3 py-2 text-left font-medium sticky left-0 bg-elevated/90">指标</th>
-            {periods.map((p) => (
-              <th key={p.end_date} className="px-3 py-2 text-right font-medium whitespace-nowrap">
-                {periodLabel(p.end_date)}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map(([label, get, cls]) => (
-            <tr key={label} className="border-b border-border/50">
-              <td className="px-3 py-2 text-muted whitespace-nowrap sticky left-0 bg-surface">{label}</td>
+    <div className="space-y-4">
+      <div className="rounded-card border border-border bg-surface p-3">
+        <h3 className="text-sm font-medium mb-1">盈利能力趋势（%）</h3>
+        <FinancialProfitChart periods={periods} />
+      </div>
+      <div className="rounded-card border border-border bg-surface p-3">
+        <h3 className="text-sm font-medium mb-1">成长能力同比（%）</h3>
+        <FinancialGrowthChart periods={periods} />
+      </div>
+      <div className="rounded-card border border-border bg-surface overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-elevated/50 text-muted text-xs">
+              <th className="px-3 py-2 text-left font-medium sticky left-0 bg-elevated/90">指标</th>
               {periods.map((p) => (
-                <td key={p.end_date} className={`px-3 py-2 text-right tabular-nums whitespace-nowrap ${cls(p)}`}>
-                  {get(p)}
-                </td>
+                <th key={p.end_date} className="px-3 py-2 text-right font-medium whitespace-nowrap">
+                  {periodLabel(p.end_date)}
+                </th>
               ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {rows.map(([label, get, cls]) => (
+              <tr key={label} className="border-b border-border/50">
+                <td className="px-3 py-2 text-muted whitespace-nowrap sticky left-0 bg-surface">{label}</td>
+                {periods.map((p) => (
+                  <td key={p.end_date} className={`px-3 py-2 text-right tabular-nums whitespace-nowrap ${cls(p)}`}>
+                    {get(p)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
@@ -103,26 +121,35 @@ function FinancialView({ periods }: { periods: FinancialPeriod[] }) {
 // ---------- 资金流 ----------
 function MoneyflowView({ data }: { data: MoneyflowDay[] }) {
   return (
-    <Table headers={['交易日期', '净流入', '特大单', '大单', '中单', '小单']}>
-      {data.map((d) => (
-        <tr key={d.trade_date} className="border-b border-border/50">
-          <td className="px-3 py-2 tabular-nums">{d.trade_date}</td>
-          <td className={`px-3 py-2 text-right tabular-nums ${signClass(d.net_mf)}`}>{fmt(d.net_mf)}</td>
-          <td className={`px-3 py-2 text-right tabular-nums ${signClass(d.elg_net)}`}>{fmt(d.elg_net)}</td>
-          <td className={`px-3 py-2 text-right tabular-nums ${signClass(d.lg_net)}`}>{fmt(d.lg_net)}</td>
-          <td className={`px-3 py-2 text-right tabular-nums ${signClass(d.md_net)}`}>{fmt(d.md_net)}</td>
-          <td className={`px-3 py-2 text-right tabular-nums ${signClass(d.sm_net)}`}>{fmt(d.sm_net)}</td>
-        </tr>
-      ))}
-    </Table>
+    <div className="space-y-4">
+      <div className="rounded-card border border-border bg-surface p-3">
+        <h3 className="text-sm font-medium mb-1">分单净额堆叠（万元）+ 净流入折线</h3>
+        <MoneyflowChart data={data} />
+      </div>
+      <Table headers={['交易日期', '净流入', '特大单', '大单', '中单', '小单']}>
+        {data.map((d) => (
+          <tr key={d.trade_date} className="border-b border-border/50">
+            <td className="px-3 py-2 tabular-nums">{d.trade_date}</td>
+            <td className={`px-3 py-2 text-right tabular-nums ${signClass(d.net_mf)}`}>{fmt(d.net_mf)}</td>
+            <td className={`px-3 py-2 text-right tabular-nums ${signClass(d.elg_net)}`}>{fmt(d.elg_net)}</td>
+            <td className={`px-3 py-2 text-right tabular-nums ${signClass(d.lg_net)}`}>{fmt(d.lg_net)}</td>
+            <td className={`px-3 py-2 text-right tabular-nums ${signClass(d.md_net)}`}>{fmt(d.md_net)}</td>
+            <td className={`px-3 py-2 text-right tabular-nums ${signClass(d.sm_net)}`}>{fmt(d.sm_net)}</td>
+          </tr>
+        ))}
+      </Table>
+    </div>
   )
 }
 
 // ---------- 北向 ----------
 function NorthView({ data }: { data: NorthDay[] }) {
   return (
-    <>
-      <p className="text-xs text-muted mb-2">注：2024年8月后北向实时净买入口径调整，历史数据仅作资金活跃度参考。单位：亿元</p>
+    <div className="space-y-4">
+      <p className="text-xs text-muted">注：2024年8月后北向实时净买入口径调整，历史数据仅作资金活跃度参考。单位：亿元</p>
+      <div className="rounded-card border border-border bg-surface p-3">
+        <NorthChart data={data} />
+      </div>
       <Table headers={['交易日期', '北向净流入', '沪股通', '深股通', '南向净流入']}>
         {data.map((d) => (
           <tr key={d.trade_date} className="border-b border-border/50">
@@ -134,7 +161,7 @@ function NorthView({ data }: { data: NorthDay[] }) {
           </tr>
         ))}
       </Table>
-    </>
+    </div>
   )
 }
 
@@ -164,6 +191,9 @@ function HoldersView({ holders, trades }: { holders: HolderItem[]; trades: Holde
     <div className="space-y-4">
       <div>
         <h3 className="text-sm font-medium mb-2">股东户数变化（户数下降=筹码集中）</h3>
+        <div className="rounded-card border border-border bg-surface p-3 mb-2">
+          <HoldersChart holders={holders} />
+        </div>
         <Table headers={['截止日期', '股东户数', '环比变化']}>
           {holders.map((h) => (
             <tr key={h.end_date} className="border-b border-border/50">
@@ -198,12 +228,33 @@ function HoldersView({ holders, trades }: { holders: HolderItem[]; trades: Holde
   )
 }
 
+// ---------- 分场景空态 ----------
+function Empty({ variant }: { variant: 'need-code' | 'no-data' | 'date-empty' }) {
+  const text =
+    variant === 'need-code'
+      ? '输入股票代码、中文名或拼音开始查询'
+      : variant === 'date-empty'
+        ? '该交易日无龙虎榜数据，换一个最近交易日试试'
+        : '未查询到该标的对应数据：可能代码有误、该期尚未披露或暂无记录'
+  return (
+    <div className="rounded-card border border-border bg-surface py-12 text-center text-muted text-sm flex flex-col items-center gap-2">
+      <BarChart3 size={28} strokeWidth={1.5} />
+      {text}
+    </div>
+  )
+}
+
 // ---------- 主页面 ----------
+interface Picked {
+  tsCode: string
+  name: string
+  industry: string | null
+}
+
 export default function TusharePage() {
   const [status, setStatus] = useState<TushareStatus | null>(null)
   const [tab, setTab] = useState<Tab>('财务分析')
-  const [codeInput, setCodeInput] = useState('')
-  const [tsCode, setTsCode] = useState('')
+  const [picked, setPicked] = useState<Picked | null>(null)
   const [dragonDate, setDragonDate] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -214,6 +265,8 @@ export default function TusharePage() {
   const [dragon, setDragon] = useState<DragonItem[]>([])
   const [holders, setHolders] = useState<HolderItem[]>([])
   const [trades, setTrades] = useState<HolderTradeItem[]>([])
+  const pickedRef = useRef<Picked | null>(null)
+  useEffect(() => { pickedRef.current = picked }, [picked])
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -227,8 +280,27 @@ export default function TusharePage() {
     refreshStatus()
   }, [refreshStatus])
 
-  // 北向、龙虎榜不依赖个股代码
+  // 按当前 tab 加载个股/全局数据；成功后清空 error
+  const loadForTab = useCallback(async (code: string, activeTab: Tab) => {
+    setLoading(true)
+    setError('')
+    try {
+      if (activeTab === '财务分析') setFinancial((await tushareApi.financial(code)).periods)
+      else if (activeTab === '资金流向') setMoneyflow((await tushareApi.moneyflow(code)).daily)
+      else if (activeTab === '股东研究') {
+        const [h, t] = await Promise.all([tushareApi.holders(code), tushareApi.holdertrade(code)])
+        setHolders(h.items)
+        setTrades(t.items)
+      }
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
   const loadNorth = useCallback(async () => {
+    setError('')
     try {
       setNorth((await tushareApi.north()).daily)
     } catch (e) {
@@ -246,51 +318,63 @@ export default function TusharePage() {
     }
   }, [dragonDate])
 
-  useEffect(() => {
-    if (status?.configured && tab === '北向资金') loadNorth()
-    if (status?.configured && tab === '龙虎榜') loadDragon()
-  }, [tab, status, loadNorth, loadDragon])
+  // 选中标的（来自搜索下拉）
+  const handlePick = useCallback(
+    (tsCode: string, name: string, industry: string | null) => {
+      setPicked({ tsCode, name, industry })
+      void loadForTab(tsCode, tab)
+    },
+    [tab, loadForTab],
+  )
 
-  const query = async (overrideCode?: string) => {
-    const code = (overrideCode ?? codeInput).trim()
-    if (!code) {
-      setError('请输入股票代码，如 000001.SZ')
-      return
-    }
-    setLoading(true)
-    setError('')
-    setTsCode(code)
-    setCodeInput(code)
-    try {
-      if (tab === '财务分析') setFinancial((await tushareApi.financial(code)).periods)
-      if (tab === '资金流向') setMoneyflow((await tushareApi.moneyflow(code)).daily)
-      if (tab === '股东研究') {
-        const [h, t] = await Promise.all([tushareApi.holders(code), tushareApi.holdertrade(code)])
-        setHolders(h.items)
-        setTrades(t.items)
+  // 回车裸输入：后端 resolve 归一化（自动补后缀 + 名单反查名称）
+  const handleSubmitRaw = useCallback(
+    async (raw: string) => {
+      setError('')
+      try {
+        const res = await tushareApi.resolve(raw)
+        setPicked({ tsCode: res.ts_code, name: res.name ?? raw, industry: res.industry })
+        void loadForTab(res.ts_code, tab)
+      } catch (e) {
+        setError((e as Error).message)
       }
-    } catch (e) {
-      setError((e as Error).message)
-    } finally {
-      setLoading(false)
-    }
-  }
+    },
+    [tab, loadForTab],
+  )
 
-  // 切换到个股类 tab 且已有代码、对应数据为空时自动加载
+  // 切换 tab：先清旧错误；全局 tab 自动加载，个股 tab 已有标的则重载。
+  // 仅随 tab 切换触发，picked 变化由 handlePick/handleSubmitRaw 主动加载，避免重复请求。
   useEffect(() => {
-    if (status?.configured && tsCode && ['财务分析', '资金流向', '股东研究'].includes(tab)) {
-      const empty =
-        (tab === '财务分析' && financial.length === 0) ||
-        (tab === '资金流向' && moneyflow.length === 0) ||
-        (tab === '股东研究' && holders.length === 0)
-      if (empty) query(tsCode)
-    }
+    setError('')
+    if (!status?.configured) return
+    if (tab === '北向资金') void loadNorth()
+    else if (tab === '龙虎榜') void loadDragon()
+    else if (pickedRef.current) void loadForTab(pickedRef.current.tsCode, tab)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab])
+  }, [tab, status, loadNorth, loadDragon, loadForTab])
 
   if (!status?.configured) return <TokenPanel onSaved={refreshStatus} />
 
   const needCode = tab !== '北向资金' && tab !== '龙虎榜'
+
+  // 空态判定
+  const emptyVariant: 'need-code' | 'no-data' | 'date-empty' =
+    tab === '龙虎榜'
+      ? dragon.length
+        ? 'no-data'
+        : 'date-empty'
+      : tab === '北向资金'
+        ? 'no-data'
+        : !picked
+          ? 'need-code'
+          : 'no-data'
+
+  const hasData =
+    tab === '财务分析' ? financial.length > 0
+    : tab === '资金流向' ? moneyflow.length > 0
+    : tab === '北向资金' ? north.length > 0
+    : tab === '龙虎榜' ? dragon.length > 0
+    : holders.length > 0
 
   return (
     <div className="flex flex-col h-full">
@@ -300,26 +384,27 @@ export default function TusharePage() {
         <div className="flex flex-wrap items-center gap-2">
           {needCode ? (
             <>
-              <input
-                value={codeInput}
-                onChange={(e) => setCodeInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && query()}
-                placeholder="股票代码，如 000001.SZ"
-                className="rounded-card border border-border bg-surface px-3 py-1.5 text-sm w-44 outline-none focus:border-accent"
-              />
-              <button
-                onClick={() => query()}
+              <StockSearchInput
+                onPick={handlePick}
+                onSubmitRaw={handleSubmitRaw}
                 disabled={loading}
-                className="rounded-card bg-accent px-4 py-1.5 text-sm font-medium text-black disabled:opacity-50"
-              >
-                {loading ? '查询中…' : '查询'}
-              </button>
+              />
+              {picked && (
+                <div className="flex items-center gap-2 rounded-card border border-border bg-surface px-3 py-1.5">
+                  <span className="text-sm font-medium">{picked.name}</span>
+                  <span className="font-mono text-xs text-muted">{picked.tsCode}</span>
+                  {picked.industry && (
+                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-accent/10 text-accent">{picked.industry}</span>
+                  )}
+                </div>
+              )}
             </>
           ) : tab === '龙虎榜' ? (
             <>
               <input
                 value={dragonDate}
                 onChange={(e) => setDragonDate(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && loadDragon()}
                 placeholder="交易日期 YYYYMMDD"
                 className="rounded-card border border-border bg-surface px-3 py-1.5 text-sm w-44 outline-none focus:border-accent"
               />
@@ -347,24 +432,18 @@ export default function TusharePage() {
           ))}
         </div>
 
-        {error && <div className="rounded-card border border-border bg-surface px-3 py-2 text-bear text-sm">{error}</div>}
+        {/* 错误条：红色（红涨绿跌，bull=红） */}
+        {error && (
+          <div className="rounded-card border border-bull/30 bg-bull/5 px-3 py-2 text-bull text-sm">{error}</div>
+        )}
 
         {/* 内容 */}
-        {tab === '财务分析' && (financial.length ? <FinancialView periods={financial} /> : <Empty />)}
-        {tab === '资金流向' && (moneyflow.length ? <MoneyflowView data={moneyflow} /> : <Empty />)}
-        {tab === '北向资金' && (north.length ? <NorthView data={north} /> : <Empty />)}
-        {tab === '龙虎榜' && (dragon.length ? <DragonView data={dragon} /> : <Empty />)}
-        {tab === '股东研究' && (holders.length ? <HoldersView holders={holders} trades={trades} /> : <Empty />)}
+        {tab === '财务分析' && (hasData ? <FinancialView periods={financial} /> : <Empty variant={emptyVariant} />)}
+        {tab === '资金流向' && (hasData ? <MoneyflowView data={moneyflow} /> : <Empty variant={emptyVariant} />)}
+        {tab === '北向资金' && (hasData ? <NorthView data={north} /> : <Empty variant={emptyVariant} />)}
+        {tab === '龙虎榜' && (hasData ? <DragonView data={dragon} /> : <Empty variant={emptyVariant} />)}
+        {tab === '股东研究' && (hasData ? <HoldersView holders={holders} trades={trades} /> : <Empty variant={emptyVariant} />)}
       </div>
-    </div>
-  )
-}
-
-function Empty() {
-  return (
-    <div className="rounded-card border border-border bg-surface py-12 text-center text-muted text-sm flex flex-col items-center gap-2">
-      <BarChart3 size={28} strokeWidth={1.5} />
-      输入条件后查询数据
     </div>
   )
 }
@@ -413,7 +492,7 @@ function TokenPanel({ onSaved }: { onSaved: () => void }) {
             placeholder="粘贴你的 Tushare token"
             className="w-full rounded-card border border-border bg-elevated px-3 py-2 text-sm outline-none focus:border-accent"
           />
-          {error && <p className="text-bear text-xs">{error}</p>}
+          {error && <p className="text-bull text-xs">{error}</p>}
           <button
             onClick={save}
             disabled={saving}
