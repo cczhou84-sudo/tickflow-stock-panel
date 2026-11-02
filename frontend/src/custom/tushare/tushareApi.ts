@@ -78,6 +78,83 @@ export interface HolderTradeItem {
   avg_price: number | null
 }
 
+// ---------- 三大报表（金额原始单位元，前端转亿元） ----------
+
+export interface IncomePeriod {
+  end_date: string
+  total_revenue: number | null
+  revenue: number | null
+  oper_cost: number | null
+  sell_exp: number | null
+  admin_exp: number | null
+  fin_exp: number | null
+  rd_exp: number | null
+  operate_profit: number | null
+  total_profit: number | null
+  income_tax: number | null
+  n_income: number | null
+  n_income_attr_p: number | null
+  minority_gain: number | null
+}
+
+export interface BalancePeriod {
+  end_date: string
+  money_cap: number | null
+  accounts_receiv: number | null
+  inventories: number | null
+  total_cur_assets: number | null
+  total_nca: number | null
+  total_assets: number | null
+  accounts_pay: number | null
+  total_cur_liab: number | null
+  total_liab: number | null
+  total_hldr_eqy_exc_min_int: number | null
+  goodwill: number | null
+  lt_borr: number | null
+}
+
+export interface CashflowPeriod {
+  end_date: string
+  c_fr_sale_sg: number | null
+  n_cashflow_act: number | null
+  n_cashflow_inv_act: number | null
+  n_cash_flows_fnc_act: number | null
+  net_profit: number | null
+}
+
+export interface BasicValuation {
+  trade_date: string
+  close: number | null
+  turnover_rate: number | null
+  turnover_rate_f: number | null
+  volume_ratio: number | null
+  pe: number | null
+  pe_ttm: number | null
+  pb: number | null
+  ps: number | null
+  ps_ttm: number | null
+  dv_ratio: number | null
+  dv_ttm: number | null
+  total_share: number | null
+  float_share: number | null
+  free_share: number | null
+  total_mv: number | null
+  circ_mv: number | null
+  limit_status: number | null
+}
+
+export interface DailyBar {
+  trade_date: string
+  open: number | null
+  high: number | null
+  low: number | null
+  close: number | null
+  pre_close: number | null
+  pct_chg: number | null
+  vol: number | null
+  amount: number | null
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
@@ -135,5 +212,26 @@ export const tushareApi = {
   holdertrade: (ts_code: string) =>
     request<{ ts_code: string; empty: boolean; vol_unit: string; items: HolderTradeItem[] }>(
       '/api/tushare/holdertrade' + qs({ ts_code }),
+    ),
+
+  income: (ts_code: string) =>
+    request<{ ts_code: string; unit: string; empty: boolean; periods: IncomePeriod[] }>(
+      '/api/tushare/income' + qs({ ts_code }),
+    ),
+  balancesheet: (ts_code: string) =>
+    request<{ ts_code: string; unit: string; empty: boolean; periods: BalancePeriod[] }>(
+      '/api/tushare/balancesheet' + qs({ ts_code }),
+    ),
+  cashflow: (ts_code: string) =>
+    request<{ ts_code: string; unit: string; empty: boolean; periods: CashflowPeriod[] }>(
+      '/api/tushare/cashflow' + qs({ ts_code }),
+    ),
+  basic: (ts_code: string) =>
+    request<{ ts_code: string; unit_mv: string; empty: boolean; basic: BasicValuation | null }>(
+      '/api/tushare/basic' + qs({ ts_code }),
+    ),
+  daily: (ts_code: string, limit = 120) =>
+    request<{ ts_code: string; empty: boolean; daily: DailyBar[] }>(
+      '/api/tushare/daily' + qs({ ts_code, limit }),
     ),
 }
