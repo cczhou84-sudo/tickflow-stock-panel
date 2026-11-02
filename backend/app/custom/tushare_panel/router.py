@@ -5,12 +5,17 @@ token 存 data/user_data/secrets.json（secrets_store，权限 0600），不进�
 """
 from __future__ import annotations
 
+import json
 import logging
+import threading
+import time
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app import secrets_store
+from app.config import settings
 
 from .client import TushareClient, TushareError
 
@@ -30,6 +35,170 @@ def _client() -> TushareClient:
     if not token:
         raise HTTPException(status_code=400, detail="未配置 Tushare token，请先在面板填写")
     return TushareClient(token)
+
+
+# ============ 代码归一化（自动补交易所后缀） ============
+
+_SH_PREFIX = ("600", "601", "603", "605", "688", "689", "900")
+_SZ_PREFIX = ("000", "001", "002", "003", "300", "301", "200")
+_BJ_PREFIX = ("4", "8", "920")
+
+
+def normalize_ts_code(raw: str) -> str:
+    """把用户输入归一为 Tushare 标准 ts_code（代码.后缀）。
+
+    - 已带合法后缀：原样返回并校验。
+    - 裸 6 位数字：按代码段自动补 .SH/.SZ/.BJ。
+    - 无法识别抛 400。
+    """
+    code = (raw or "").strip().upper()
+    if not code:
+        raise HTTPException(status_code=400, detail="股票代码不能为空")
+    if "." in code:
+        symbol, _, exchange = code.partition(".")
+        if exchange not in ("SH", "SZ", "BJ") or not symbol.isdigit():
+            raise HTTPException(status_code=400, detail=f"代码格式无法识别：{raw}（应为 000001.SZ 形式）")
+        return code
+    if code.isdigit():
+        if len(code) == 6:
+            if code.startswith(_SH_PREFIX):
+                return code + ".SH"
+            if code.startswith(_SZ_PREFIX):
+                return code + ".SZ"
+            if code.startswith(_BJ_PREFIX):
+                return code + ".BJ"
+            raise HTTPException(status_code=400, detail=f"无法判断 {code} 所属交易所，请带后缀（.SH/.SZ/.BJ）")
+        if code.startswith(_BJ_PREFIX):
+            return code + ".BJ"
+    raise HTTPException(status_code=400, detail="代码格式无法识别：请输入代码、中文名或拼音")
+
+
+# ============ 全 A 名单缓存（中文名 / 拼音搜索） ============
+
+_BASIC_CACHE: list[dict] | None = None
+_BASIC_LOCK = threading.RLock()
+_BASIC_LOADED_AT = 0.0
+_BASIC_TTL = 12 * 3600
+
+
+def _basic_path() -> Path:
+    p = settings.data_dir / "user_data" / "tushare_stock_basic.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _read_basic_disk() -> list[dict]:
+    p = _basic_path()
+    if not p.exists():
+        return []
+    try:
+        rows = json.loads(p.read_text(encoding="utf-8"))
+        return rows if isinstance(rows, list) else []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("stock_basic 本地缓存读取失败: %s", exc)
+        return []
+
+
+async def _ensure_stock_basic(force: bool = False) -> list[dict]:
+    """加载全 A 名单：内存 → 本地 json → Tushare stock_basic；拉取失败时降级用本地旧缓存。"""
+    global _BASIC_CACHE, _BASIC_LOADED_AT
+
+    with _BASIC_LOCK:
+        if not force and _BASIC_CACHE is not None and time.time() - _BASIC_LOADED_AT < _BASIC_TTL:
+            return _BASIC_CACHE
+        if not force:
+            disk = _read_basic_disk()
+            if disk:
+                _BASIC_CACHE, _BASIC_LOADED_AT = disk, time.time()
+                return disk
+
+    try:
+        rows = await _client().call(
+            "stock_basic",
+            {"list_status": "L"},
+            "ts_code,symbol,name,cnspell,industry,market,exchange,area,list_date",
+        )
+    except TushareError:
+        disk = _read_basic_disk()
+        if disk:
+            with _BASIC_LOCK:
+                _BASIC_CACHE, _BASIC_LOADED_AT = disk, time.time()
+            return disk
+        raise
+
+    rows = [r for r in rows if r.get("ts_code")]
+    with _BASIC_LOCK:
+        _BASIC_CACHE, _BASIC_LOADED_AT = rows, time.time()
+    try:
+        _basic_path().write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("stock_basic 落盘失败: %s", exc)
+    return rows
+
+
+@router.get("/search")
+async def search(q: str = "", limit: int = 20) -> dict:
+    """代码 / 中文名 / 拼音缩写分层模糊搜索全 A 名单。"""
+    q = q.strip()
+    if not q:
+        return {"results": []}
+    try:
+        stocks = await _ensure_stock_basic()
+    except TushareError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+    kw = q.upper()
+    is_alpha = kw.isascii() and kw.isalpha()
+    prefix: list[dict] = []
+    pinyin: list[dict] = []
+    contains: list[dict] = []
+    for s in stocks:
+        symbol = (s.get("symbol") or "").upper()
+        ts_code = (s.get("ts_code") or "").upper()
+        name = s.get("name") or ""
+        spell = (s.get("cnspell") or "").upper()
+        if symbol.startswith(kw) or ts_code.startswith(kw):
+            prefix.append(s)
+        elif is_alpha and spell.startswith(kw):
+            pinyin.append(s)
+        elif kw in name.upper() or kw in ts_code:
+            contains.append(s)
+
+    results: list[dict] = []
+    seen: set[str] = set()
+    for s in prefix + pinyin + contains:
+        code = s.get("ts_code")
+        if code in seen:
+            continue
+        seen.add(code)
+        results.append({
+            "ts_code": code,
+            "symbol": s.get("symbol"),
+            "name": s.get("name"),
+            "industry": s.get("industry"),
+            "market": s.get("market"),
+        })
+        if len(results) >= limit:
+            break
+    return {"results": results}
+
+
+@router.get("/resolve")
+async def resolve(code: str) -> dict:
+    """归一化用户输入为标准 ts_code，并尽量从名单带出中文名/行业。"""
+    ts_code = normalize_ts_code(code)
+    name = None
+    industry = None
+    try:
+        stocks = await _ensure_stock_basic()
+        hit = next((s for s in stocks if s.get("ts_code") == ts_code), None)
+        if hit:
+            name = hit.get("name")
+            industry = hit.get("industry")
+    except TushareError:
+        # 名单不可用不阻塞代码归一
+        pass
+    return {"ts_code": ts_code, "name": name, "industry": industry}
 
 
 # ============ Token 管理 ============
@@ -71,9 +240,7 @@ FINANCIAL_FIELDS = [
 
 @router.get("/financial")
 async def financial(ts_code: str, limit: int = 8) -> dict:
-    ts_code = ts_code.strip()
-    if not ts_code:
-        raise HTTPException(status_code=400, detail="ts_code 不能为空")
+    ts_code = normalize_ts_code(ts_code)
     try:
         rows = await _client().call(
             "fina_indicator",
@@ -91,7 +258,7 @@ async def financial(ts_code: str, limit: int = 8) -> dict:
     periods = sorted(latest.values(), key=lambda x: x["end_date"], reverse=True)[:limit]
     for p in periods:
         p.pop("update_flag", None)
-    return {"ts_code": ts_code, "periods": periods}
+    return {"ts_code": ts_code, "empty": not periods, "periods": periods}
 
 
 # ============ 资金流 ============
@@ -114,9 +281,7 @@ def _net(buy, sell) -> float | None:
 
 @router.get("/moneyflow")
 async def moneyflow(ts_code: str, limit: int = 20) -> dict:
-    ts_code = ts_code.strip()
-    if not ts_code:
-        raise HTTPException(status_code=400, detail="ts_code 不能为空")
+    ts_code = normalize_ts_code(ts_code)
     try:
         rows = await _client().call(
             "moneyflow",
@@ -138,7 +303,7 @@ async def moneyflow(ts_code: str, limit: int = 20) -> dict:
             "elg_net": _net(r.get("buy_elg_amount"), r.get("sell_elg_amount")),
         })
     total_net = round(sum(d["net_mf"] for d in daily if d["net_mf"] is not None), 2)
-    return {"ts_code": ts_code, "unit": "万元", "total_net": total_net, "daily": daily}
+    return {"ts_code": ts_code, "unit": "万元", "empty": not daily, "total_net": total_net, "daily": daily}
 
 
 @router.get("/north")
@@ -168,7 +333,7 @@ async def north(limit: int = 30) -> dict:
         }
         for r in rows[-limit:]
     ]
-    return {"unit": "亿元", "daily": daily}
+    return {"unit": "亿元", "empty": not daily, "daily": daily}
 
 
 # ============ 龙虎榜 ============
@@ -212,7 +377,7 @@ async def dragon(trade_date: str) -> dict:
         }
         for r in rows
     ]
-    return {"trade_date": trade_date, "unit": "亿元", "items": items}
+    return {"trade_date": trade_date, "unit": "亿元", "empty": not items, "items": items}
 
 
 # ============ 股东筹码 ============
@@ -220,9 +385,7 @@ async def dragon(trade_date: str) -> dict:
 @router.get("/holders")
 async def holders(ts_code: str, limit: int = 12) -> dict:
     """股东户数变化（户数下降=筹码集中）。"""
-    ts_code = ts_code.strip()
-    if not ts_code:
-        raise HTTPException(status_code=400, detail="ts_code 不能为空")
+    ts_code = normalize_ts_code(ts_code)
     try:
         rows = await _client().call(
             "stk_holdernumber",
@@ -245,15 +408,13 @@ async def holders(ts_code: str, limit: int = 12) -> dict:
             "holder_num": num,
             "change": change,
         })
-    return {"ts_code": ts_code, "items": items}
+    return {"ts_code": ts_code, "empty": not items, "items": items}
 
 
 @router.get("/holdertrade")
 async def holdertrade(ts_code: str, limit: int = 20) -> dict:
     """重要股东增减持。"""
-    ts_code = ts_code.strip()
-    if not ts_code:
-        raise HTTPException(status_code=400, detail="ts_code 不能为空")
+    ts_code = normalize_ts_code(ts_code)
     try:
         rows = await _client().call(
             "stk_holdertrade",
@@ -277,4 +438,4 @@ async def holdertrade(ts_code: str, limit: int = 20) -> dict:
         }
         for r in rows
     ]
-    return {"ts_code": ts_code, "vol_unit": "万股", "items": items}
+    return {"ts_code": ts_code, "empty": not items, "vol_unit": "万股", "items": items}

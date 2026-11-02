@@ -5,6 +5,14 @@ export interface TushareStatus {
   tokenMask: string
 }
 
+export interface SearchResult {
+  ts_code: string
+  symbol: string | null
+  name: string
+  industry: string | null
+  market: string | null
+}
+
 export interface FinancialPeriod {
   end_date: string
   eps: number | null
@@ -99,26 +107,33 @@ export const tushareApi = {
     }),
   clearToken: () => request<{ ok: boolean }>('/api/tushare/token', { method: 'DELETE' }),
 
+  search: (q: string, limit = 20) =>
+    request<{ results: SearchResult[] }>('/api/tushare/search' + qs({ q, limit })),
+  resolve: (code: string) =>
+    request<{ ts_code: string; name: string | null; industry: string | null }>(
+      '/api/tushare/resolve' + qs({ code }),
+    ),
+
   financial: (ts_code: string) =>
-    request<{ ts_code: string; periods: FinancialPeriod[] }>(
+    request<{ ts_code: string; empty: boolean; periods: FinancialPeriod[] }>(
       '/api/tushare/financial' + qs({ ts_code }),
     ),
   moneyflow: (ts_code: string) =>
-    request<{ ts_code: string; unit: string; total_net: number; daily: MoneyflowDay[] }>(
+    request<{ ts_code: string; unit: string; empty: boolean; total_net: number; daily: MoneyflowDay[] }>(
       '/api/tushare/moneyflow' + qs({ ts_code }),
     ),
   north: () =>
-    request<{ unit: string; daily: NorthDay[] }>('/api/tushare/north'),
+    request<{ unit: string; empty: boolean; daily: NorthDay[] }>('/api/tushare/north'),
   dragon: (trade_date: string) =>
-    request<{ trade_date: string; unit: string; items: DragonItem[] }>(
+    request<{ trade_date: string; unit: string; empty: boolean; items: DragonItem[] }>(
       '/api/tushare/dragon' + qs({ trade_date }),
     ),
   holders: (ts_code: string) =>
-    request<{ ts_code: string; items: HolderItem[] }>(
+    request<{ ts_code: string; empty: boolean; items: HolderItem[] }>(
       '/api/tushare/holders' + qs({ ts_code }),
     ),
   holdertrade: (ts_code: string) =>
-    request<{ ts_code: string; vol_unit: string; items: HolderTradeItem[] }>(
+    request<{ ts_code: string; empty: boolean; vol_unit: string; items: HolderTradeItem[] }>(
       '/api/tushare/holdertrade' + qs({ ts_code }),
     ),
 }
