@@ -144,6 +144,43 @@ def classify_state(metrics: dict) -> tuple[str, int]:
     return state, score
 
 
+# 持久化行 schema: 与 regime_history 旧 parquet 对齐。显式定型可避免 dict 列表
+# 构造时按前若干行把全 None 列(如 promo_rate)推断成 Null、把 0.0 退化成 int,
+# 后续混入 f64 被 builder 拒绝(见 ComputeError "could not append value ... f64")。
+_REGIME_ROW_SCHEMA: dict[str, pl.DataType] = {
+    "date": pl.Date,
+    "state": pl.Utf8,
+    "score": pl.Int64,
+    "limit_up": pl.Int64,
+    "limit_down": pl.Int64,
+    "broken_limit": pl.Int64,
+    "max_consecutive": pl.Int64,
+    "seal_rate": pl.Float64,
+    "up_count": pl.Int64,
+    "down_count": pl.Int64,
+    "up_ratio": pl.Float64,
+    "index_pct": pl.Float64,
+    "above_ma20_pct": pl.Float64,
+    "total_amount": pl.Float64,
+    "avg_turnover": pl.Float64,
+    "avg_pct": pl.Float64,
+    "median_pct": pl.Float64,
+    "strong_up_pct": pl.Float64,
+    "strong_down_pct": pl.Float64,
+    "profit_score": pl.Int64,
+    "speculation_score": pl.Int64,
+    "resilience_score": pl.Int64,
+    "trend_score": pl.Int64,
+    "first_board": pl.Int64,
+    "ge2_count": pl.Int64,
+    "ge3_count": pl.Int64,
+    "ge5_count": pl.Int64,
+    "ladder_completeness": pl.Float64,
+    "promo_pool": pl.Int64,
+    "promo_rate": pl.Float64,
+}
+
+
 # ───────────────────────── 批量聚合 ─────────────────────────
 
 def _aggregate_daily(df: pl.DataFrame, index_pct_map: dict | None = None) -> pl.DataFrame:
@@ -299,8 +336,8 @@ def _aggregate_daily(df: pl.DataFrame, index_pct_map: dict | None = None) -> pl.
             "up_ratio": round(metrics["up_ratio"], 4),
             "index_pct": round(metrics["index_pct"], 4),
             "above_ma20_pct": round(ma20_above, 4),
-            "total_amount": metrics["total_amount"],
-            "avg_turnover": metrics["avg_turnover"],
+            "total_amount": float(metrics["total_amount"] or 0),
+            "avg_turnover": float(metrics["avg_turnover"] or 0),
             # 新增列(供未来策略按强势股占比等过滤)
             "avg_pct": round(avg_pct, 4),
             "median_pct": round(median_pct, 4),
@@ -314,7 +351,12 @@ def _aggregate_daily(df: pl.DataFrame, index_pct_map: dict | None = None) -> pl.
             # 梯队指标(阶段判定所需); phase 由 refresh_phase_labels 统一重标
             **finalize_ladder_row(r),
         })
-    return pl.DataFrame(rows) if rows else pl.DataFrame()
+    if not rows:
+        return pl.DataFrame()
+    # 显式 schema: 避免 dict 列表推断时把前几行全 None 的 promo_rate 定型为 Null、
+    # 把 0.0 退化成 int, 后续混入 f64 被 builder 拒绝 (ComputeError)。
+    schema = {k: t for k, t in _REGIME_ROW_SCHEMA.items() if k in rows[0]}
+    return pl.DataFrame(rows, schema=schema)
 
 
 # 全量回填分批参数(控制内存峰值) —— 实际值从用户偏好读取(preferences.get_regime_*),
@@ -506,7 +548,7 @@ def refresh_phase_labels(data_dir: Path) -> int:
         return 0
     try:
         labeled = classify_phase_series(df)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.warning("refresh_phase_labels failed: %s", e)
         return 0
     labeled.write_parquet(regime_path(data_dir))
@@ -870,7 +912,7 @@ def save_regime_market(data_dir: Path, market: str, new_rows: pl.DataFrame) -> N
 
 
 def load_regime_market_history(data_dir: Path, market: str) -> pl.DataFrame:
-    """读取港美股 regime 时序；不存在返回空。"""
+    """读取港美股 regime 时序；不存在返回空 DataFrame。"""
     p = regime_market_path(data_dir, market)
     if not p.exists():
         return pl.DataFrame()
