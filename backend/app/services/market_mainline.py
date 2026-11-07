@@ -142,7 +142,9 @@ def compute_mainline_range(repo, data_dir: Path, start: date, end: date,
         return pl.DataFrame()
 
     map_df, _ = _load_concept_map_df(repo, kind)
-    if map_df.is_empty():
+    # 防御: 映射表必须是 DataFrame 且含维度列; 异常快照/缓存污染时早退空表,
+    # 避免把畸形对象传到 group_by 炸掉整条管道(偶发 'Series' object has no attribute 'group_by')。
+    if not isinstance(map_df, pl.DataFrame) or map_df.is_empty() or kind not in map_df.columns:
         return pl.DataFrame()
 
     cfg = _resolve_filter_config(filter_cfg)
@@ -185,7 +187,7 @@ def compute_mainline_range(repo, data_dir: Path, start: date, end: date,
             limit_rows = limit_rows.filter(~pl.col("_sym_up").is_in(sorted(st_syms)))
 
     joined = limit_rows.join(map_df, on="_sym_up", how="inner")
-    if joined.is_empty():
+    if not isinstance(joined, pl.DataFrame) or joined.is_empty() or kind not in joined.columns:
         return pl.DataFrame()
     joined = joined.with_columns(
         pl.col(kind).map_elements(
